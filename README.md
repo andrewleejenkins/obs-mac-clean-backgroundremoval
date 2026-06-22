@@ -32,24 +32,39 @@ This fork fixes that with a **Protected Region**: a user-positioned rectangle th
 
 ## Installation
 
-> The plugin is not code-signed or notarized (it is free and open source), so macOS Gatekeeper will block it on first run. The steps below get you past that safely - you only do this once.
+> Releases are **code-signed and notarized** with an Apple Developer ID, so they install with no Gatekeeper warning. (Older builds were unsigned and required an "Open Anyway" step - that is no longer needed.)
 
-1. **Download** the latest `obs-mac-backgroundremoval-x.y.z-macos-universal.pkg` from the [Releases page](https://github.com/andrewleejenkins/obs-mac-clean-backgroundremoval/releases/latest).
-2. **Open the `.pkg`.** macOS will show a warning that it cannot verify the developer. Click **Done** (do **not** click "Move to Trash").
-3. Open **System Settings → Privacy & Security**. Scroll down to the **Security** section. You will see a message that `obs-mac-backgroundremoval-[...].pkg` was blocked.
-4. Click **Open Anyway** and confirm with your administrator login (Touch ID or password).
-5. The installer reopens - run through it to finish.
-6. **Quit and reopen OBS** if it was already running.
+1. **Quit OBS completely** (Cmd-Q, not just closing the window).
+2. **If you already have a previous version installed, uninstall it first** - see [Upgrading](#upgrading-from-a-previous-version) below. This step matters.
+3. **Download** the latest `obs-mac-backgroundremoval-x.y.z-macos-universal.pkg` from the [Releases page](https://github.com/andrewleejenkins/obs-mac-clean-backgroundremoval/releases/latest).
+4. **Open the `.pkg`** and run through the installer.
+5. **Open OBS.** Add the filter to a source (see [How to use](#how-to-use)).
 
 The plugin installs to `~/Library/Application Support/obs-studio/plugins/`.
 
-### Drop-in replacement note
+### Upgrading from a previous version
 
-This fork keeps the **same plugin name and identifier** as the original, so it installs as a drop-in replacement. If you already have the original `obs-mac-backgroundremoval` installed, this overwrites it and your existing scene filters keep working - they simply gain the new Protected Region option. If you would rather start clean, delete the old `obs-mac-backgroundremoval.plugin` from the plugins folder above before installing.
+This is important. If you already have the original `obs-mac-backgroundremoval` (or any earlier build) installed, **uninstall it before installing the new one.** The macOS installer will sometimes report "Installation successful" but **silently skip overwriting an existing older bundle** - so you end up still running the old version with none of the new controls. The tell-tale symptom: you install, reopen OBS, and the filter looks exactly the same (no "Keep a protected region" option).
+
+To do a clean upgrade, **quit OBS first**, then run:
+
+```sh
+rm -rf "$HOME/Library/Application Support/obs-studio/plugins/obs-mac-backgroundremoval.plugin"
+```
+
+Then install the new `.pkg` and reopen OBS. Your existing scene filters keep working and gain the Protected Region option - filter settings are stored in your OBS scene collection, not in the plugin, so nothing is lost.
+
+To confirm which version is actually loaded, you can check:
+
+```sh
+grep -i Protect "$HOME/Library/Application Support/obs-studio/plugins/obs-mac-backgroundremoval.plugin/Contents/Resources/locale/en-US.ini"
+```
+
+If that prints `Protect.*` lines, you are on this fork. If it prints nothing, the old version is still installed.
 
 ### Uninstalling
 
-Delete `~/Library/Application Support/obs-studio/plugins/obs-mac-backgroundremoval.plugin` and restart OBS.
+Quit OBS, then delete `~/Library/Application Support/obs-studio/plugins/obs-mac-backgroundremoval.plugin` and reopen OBS.
 
 ---
 
