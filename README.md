@@ -160,7 +160,9 @@ Built and maintained by **Andrew Lee Jenkins**.
 ### Connect
 
 <!-- SOCIALS:START -->
-_Social links coming soon._
+- **X / Twitter** - <https://x.com/_cultvibez>
+- **LinkedIn** - <https://www.linkedin.com/in/andrew-lee-jenkins/>
+- **Facebook** - <https://www.facebook.com/AndrewLeeJenkins>
 <!-- SOCIALS:END -->
 
 If this plugin saved your microphone, a ⭐ on the repo is appreciated.
