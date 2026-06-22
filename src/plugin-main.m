@@ -35,6 +35,11 @@ struct vision_data {
     gs_eparam_t *threshold_param;
     float threshold;
 
+    gs_eparam_t *protect_region_param;
+    gs_eparam_t *protect_feather_param;
+    struct vec4 protect_region;
+    float protect_feather;
+
     VNGeneratePersonSegmentationRequestQualityLevel qualityLevel;
     gs_texture_t *mask_texture;
 
@@ -169,11 +174,24 @@ static void vision_render(void *filter_ptr, gs_effect_t *)
         gs_effect_set_texture_srgb(filter->src_param, source_texture);
         gs_effect_set_texture_srgb(filter->mask_param, filter->mask_texture);
         gs_effect_set_float(filter->threshold_param, filter->threshold);
+        gs_effect_set_vec4(filter->protect_region_param, &filter->protect_region);
+        gs_effect_set_float(filter->protect_feather_param, filter->protect_feather);
 
         gs_blend_state_push();
         obs_source_process_filter_tech_end(filter->context, filter->effect, 0, 0, "Draw");
         gs_blend_state_pop();
     }
+}
+
+/* Show or hide the protected-region controls based on the enable toggle. */
+static bool protect_enabled_changed(obs_properties_t *props, obs_property_t *, obs_data_t *settings)
+{
+    const bool enabled = obs_data_get_bool(settings, "protect_enabled");
+    const char *const fields[] = {"protect_x", "protect_y", "protect_width", "protect_height", "protect_feather"};
+    for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
+        obs_property_set_visible(obs_properties_get(props, fields[i]), enabled);
+    }
+    return true;
 }
 
 static obs_properties_t *vision_properties(void *)
@@ -188,6 +206,17 @@ static obs_properties_t *vision_properties(void *)
                               VNGeneratePersonSegmentationRequestQualityLevelBalanced);
     obs_property_list_add_int(list, obs_module_text("Quality.Fast"),
                               VNGeneratePersonSegmentationRequestQualityLevelFast);
+
+    /* Protected region: always keep a user-defined box in the foreground. */
+    obs_property_t *enable =
+        obs_properties_add_bool(props, "protect_enabled", obs_module_text("Protect.Enabled"));
+    obs_property_set_long_description(enable, obs_module_text("Protect.Description"));
+    obs_property_set_modified_callback(enable, protect_enabled_changed);
+    obs_properties_add_float_slider(props, "protect_x", obs_module_text("Protect.X"), 0, 1, 0.01);
+    obs_properties_add_float_slider(props, "protect_y", obs_module_text("Protect.Y"), 0, 1, 0.01);
+    obs_properties_add_float_slider(props, "protect_width", obs_module_text("Protect.Width"), 0, 1, 0.01);
+    obs_properties_add_float_slider(props, "protect_height", obs_module_text("Protect.Height"), 0, 1, 0.01);
+    obs_properties_add_float_slider(props, "protect_feather", obs_module_text("Protect.Feather"), 0, 0.25, 0.005);
     return props;
 }
 
@@ -195,6 +224,14 @@ static void vision_defaults(obs_data_t *settings)
 {
     obs_data_set_default_double(settings, "threshold", 0.9);
     obs_data_set_default_int(settings, "quality", VNGeneratePersonSegmentationRequestQualityLevelBalanced);
+    /* Default protected box sits bottom-center, where a desk/boom microphone
+     * typically appears. Enabled by default so the mic is kept out of the box. */
+    obs_data_set_default_bool(settings, "protect_enabled", true);
+    obs_data_set_default_double(settings, "protect_x", 0.37);
+    obs_data_set_default_double(settings, "protect_y", 0.60);
+    obs_data_set_default_double(settings, "protect_width", 0.26);
+    obs_data_set_default_double(settings, "protect_height", 0.40);
+    obs_data_set_default_double(settings, "protect_feather", 0.02);
 }
 
 static void vision_update(void *filter_ptr, obs_data_t *settings)
@@ -203,6 +240,17 @@ static void vision_update(void *filter_ptr, obs_data_t *settings)
 
     filter->threshold = obs_data_get_double(settings, "threshold");
     filter->qualityLevel = obs_data_get_int(settings, "quality");
+
+    if (obs_data_get_bool(settings, "protect_enabled")) {
+        vec4_set(&filter->protect_region, (float) obs_data_get_double(settings, "protect_x"),
+                 (float) obs_data_get_double(settings, "protect_y"),
+                 (float) obs_data_get_double(settings, "protect_width"),
+                 (float) obs_data_get_double(settings, "protect_height"));
+    } else {
+        /* Zero size disables the protected region in the shader. */
+        vec4_zero(&filter->protect_region);
+    }
+    filter->protect_feather = (float) obs_data_get_double(settings, "protect_feather");
 }
 
 static void *vision_create(obs_data_t *settings, struct obs_source *source)
@@ -225,6 +273,8 @@ static void *vision_create(obs_data_t *settings, struct obs_source *source)
     filter->src_param = gs_effect_get_param_by_name(filter->effect, "image");
     filter->mask_param = gs_effect_get_param_by_name(filter->effect, "mask");
     filter->threshold_param = gs_effect_get_param_by_name(filter->effect, "threshold");
+    filter->protect_region_param = gs_effect_get_param_by_name(filter->effect, "protect_region");
+    filter->protect_feather_param = gs_effect_get_param_by_name(filter->effect, "protect_feather");
     obs_leave_graphics();
     vision_update(filter, settings);
     return filter;

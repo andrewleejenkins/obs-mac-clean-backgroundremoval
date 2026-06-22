@@ -4,6 +4,13 @@ uniform texture2d image;
 uniform texture2d mask;
 uniform float threshold;
 
+/* Protected region: a box (normalized UV, top-left origin) that is always
+ * forced to foreground regardless of the person-segmentation mask. This keeps
+ * static objects in front of the subject (e.g. a microphone) from being cut.
+ * When the box has zero size the feature is disabled. */
+uniform float4 protect_region; /* xy = top-left corner, zw = width/height */
+uniform float protect_feather; /* soft edge half-width in UV units */
+
 sampler_state texSampler {
 	Filter    = Linear;
 	AddressU  = Clamp;
@@ -27,10 +34,25 @@ VertData VSDefault(VertData v_in)
 	return v_out;
 }
 
+/* Smooth 0..1 box factor for the protected region, with feathered edges. */
+float protect_box_factor(float2 uv)
+{
+	float2 lo = protect_region.xy;
+	float2 hi = protect_region.xy + protect_region.zw;
+	float f = max(protect_feather, 1e-5);
+	float fx = smoothstep(lo.x - f, lo.x + f, uv.x) * (1.0 - smoothstep(hi.x - f, hi.x + f, uv.x));
+	float fy = smoothstep(lo.y - f, lo.y + f, uv.y) * (1.0 - smoothstep(hi.y - f, hi.y + f, uv.y));
+	return fx * fy;
+}
+
 float4 PSMask(FragData f_in) : TARGET
 {
 	float4 rgba = image.Sample(texSampler, f_in.uv);
-	rgba *= smoothstep(threshold - 0.1,threshold,mask.Sample(texSampler, f_in.uv).a);
+	float keep = smoothstep(threshold - 0.1, threshold, mask.Sample(texSampler, f_in.uv).a);
+	if (protect_region.z > 0.0 && protect_region.w > 0.0) {
+		keep = max(keep, protect_box_factor(f_in.uv));
+	}
+	rgba *= keep;
 	return rgba;
 }
 
