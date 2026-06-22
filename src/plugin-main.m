@@ -19,6 +19,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <obs-module.h>
 #include <plugin-support.h>
 #include <util/threading.h>
+#include <stdatomic.h>
 #include <Vision/Vision.h>
 
 OBS_DECLARE_MODULE()
@@ -27,7 +28,10 @@ OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
 struct vision_data {
     obs_source_t *context;
     gs_texrender_t *texrender;
+    gs_texrender_t *seg_texrender;
     gs_stagesurf_t *stagesurf;
+    atomic_bool request_in_flight;
+    float proc_scale;
     VNGeneratePersonSegmentationRequest *request;
     gs_effect_t *effect;
     gs_eparam_t *src_param;
@@ -98,46 +102,94 @@ static void vision_render(void *filter_ptr, gs_effect_t *)
     }
     enum gs_color_format format = gs_texture_get_color_format(source_texture);
 
-    /* STEP THREE: Creation of new mask */
-    /* STEP THREE point one: Create new pixel buffer from source texture */
-    if (filter->stagesurf && (width != gs_stagesurface_get_width(filter->stagesurf) ||
-                              height != gs_stagesurface_get_height(filter->stagesurf))) {
-        gs_stagesurface_destroy(filter->stagesurf);
-        filter->stagesurf = NULL;
+    /* STEP THREE: Creation of new mask.
+     *
+     * Two latency optimizations live here:
+     *  1. In-flight guard: only kick off a new segmentation if the previous one
+     *     has finished. Firing one every frame onto a serial queue lets requests
+     *     pile up under fast motion, so the mask falls further and further behind.
+     *     Skipping also avoids the expensive frame staging on busy frames.
+     *  2. Reduced-resolution input: segment a downscaled copy of the frame so
+     *     inference is faster and the mask keeps up with motion. The mask is
+     *     upscaled (linear) when composited, so output stays full resolution. */
+    if (!atomic_exchange(&filter->request_in_flight, true)) {
+        float scale = filter->proc_scale;
+        uint32_t seg_width = (uint32_t) ((float) width * scale);
+        uint32_t seg_height = (uint32_t) ((float) height * scale);
+        if (seg_width < 16)
+            seg_width = 16;
+        if (seg_height < 16)
+            seg_height = 16;
+
+        /* STEP THREE point one: Render a downscaled copy of the source. */
+        gs_texrender_reset(filter->seg_texrender);
+        gs_blend_state_push();
+        gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
+        gs_texture_t *seg_texture = NULL;
+        if (gs_texrender_begin(filter->seg_texrender, seg_width, seg_height)) {
+            struct vec4 seg_clear;
+            vec4_zero(&seg_clear);
+            gs_clear(GS_CLEAR_COLOR, &seg_clear, 0, 0);
+            gs_ortho(0, width, 0, height, -100, 100);
+            if (target == parent && !custom_draw && !async_source) {
+                obs_source_default_render(target);
+            } else {
+                obs_source_video_render(target);
+            }
+            gs_texrender_end(filter->seg_texrender);
+            seg_texture = gs_texrender_get_texture(filter->seg_texrender);
+        }
+        gs_blend_state_pop();
+
+        /* STEP THREE point two: Stage it to a pixel buffer. */
+        CVPixelBufferRef pixelBufferIn = NULL;
+        if (seg_texture) {
+            if (filter->stagesurf && (seg_width != gs_stagesurface_get_width(filter->stagesurf) ||
+                                      seg_height != gs_stagesurface_get_height(filter->stagesurf))) {
+                gs_stagesurface_destroy(filter->stagesurf);
+                filter->stagesurf = NULL;
+            }
+            if (!filter->stagesurf) {
+                filter->stagesurf = gs_stagesurface_create(seg_width, seg_height, GS_BGRA);
+            }
+            gs_stage_texture(filter->stagesurf, seg_texture);
+            uint8_t *data;
+            uint32_t linesize;
+            if (gs_stagesurface_map(filter->stagesurf, &data, &linesize)) {
+                CVPixelBufferCreateWithBytes(kCFAllocatorDefault, seg_width, seg_height, kCVPixelFormatType_32BGRA,
+                                             data, linesize, nil, nil, nil, &pixelBufferIn);
+                gs_stagesurface_unmap(filter->stagesurf);
+            }
+        }
+
+        /* STEP THREE point three: Dispatch creation of new mask, or release the
+         * guard if we could not produce an input this frame. */
+        if (pixelBufferIn) {
+            dispatch_async(filter->mask_queue, ^{
+                filter->request.qualityLevel = filter->qualityLevel;
+
+                NSDictionary *empty = [[NSDictionary alloc] init];
+                VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCVPixelBuffer:pixelBufferIn
+                                                                                              options:empty];
+
+                NSArray *requests = [[NSArray alloc] initWithObjects:filter->request, nil];
+                [handler performRequests:requests error:nil];
+                pthread_mutex_lock(&filter->pixelBufferMutex);
+                if (filter->pixelBufferOut)
+                    CVPixelBufferRelease(filter->pixelBufferOut);
+                filter->pixelBufferOut = filter->request.results.firstObject.pixelBuffer;
+                CVPixelBufferRetain(filter->pixelBufferOut);
+                pthread_mutex_unlock(&filter->pixelBufferMutex);
+                CVPixelBufferRelease(pixelBufferIn);
+                [empty release];
+                [handler release];
+                [requests release];
+                atomic_store(&filter->request_in_flight, false);
+            });
+        } else {
+            atomic_store(&filter->request_in_flight, false);
+        }
     }
-    if (!filter->stagesurf) {
-        filter->stagesurf = gs_stagesurface_create(width, height, format);
-    }
-    gs_stage_texture(filter->stagesurf, source_texture);
-    uint8_t *data;
-    uint32_t linesize;
-    gs_stagesurface_map(filter->stagesurf, &data, &linesize);
-    CVPixelBufferRef pixelBufferIn;
-    CVPixelBufferCreateWithBytes(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA, data, linesize, nil,
-                                 nil, nil, &pixelBufferIn);
-    gs_stagesurface_unmap(filter->stagesurf);
-
-    /* STEP THREE point two: Dispatch creation of new mask */
-    dispatch_async(filter->mask_queue, ^{
-        filter->request.qualityLevel = filter->qualityLevel;
-
-        NSDictionary *empty = [[NSDictionary alloc] init];
-        VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCVPixelBuffer:pixelBufferIn
-                                                                                      options:empty];
-
-        NSArray *requests = [[NSArray alloc] initWithObjects:filter->request, nil];
-        [handler performRequests:requests error:nil];
-        pthread_mutex_lock(&filter->pixelBufferMutex);
-        if (filter->pixelBufferOut)
-            CVPixelBufferRelease(filter->pixelBufferOut);
-        filter->pixelBufferOut = filter->request.results.firstObject.pixelBuffer;
-        CVPixelBufferRetain(filter->pixelBufferOut);
-        pthread_mutex_unlock(&filter->pixelBufferMutex);
-        CVPixelBufferRelease(pixelBufferIn);
-        [empty release];
-        [handler release];
-        [requests release];
-    });
 
     /* Don't render if the output pixel buffer doesn't exist, like before the first frame is processed */
     if (!filter->pixelBufferOut) {
@@ -202,6 +254,9 @@ static obs_properties_t *vision_properties(void *)
 {
     obs_properties_t *props = obs_properties_create();
     obs_properties_add_float_slider(props, "threshold", obs_module_text("Threshold"), 0, 1, 0.05);
+    obs_property_t *scale =
+        obs_properties_add_float_slider(props, "proc_scale", obs_module_text("ProcScale"), 0.25, 1.0, 0.05);
+    obs_property_set_long_description(scale, obs_module_text("ProcScale.Description"));
     obs_property_t *list = obs_properties_add_list(props, "quality", obs_module_text("Quality"), OBS_COMBO_TYPE_LIST,
                                                    OBS_COMBO_FORMAT_INT);
     obs_property_list_add_int(list, obs_module_text("Quality.Accurate"),
@@ -229,6 +284,9 @@ static void vision_defaults(obs_data_t *settings)
 {
     obs_data_set_default_double(settings, "threshold", 0.9);
     obs_data_set_default_int(settings, "quality", VNGeneratePersonSegmentationRequestQualityLevelBalanced);
+    /* Segment at half resolution by default: much faster inference (mask keeps
+     * up with motion) with negligible quality loss, since the mask is upscaled. */
+    obs_data_set_default_double(settings, "proc_scale", 0.5);
     /* Default protected box sits bottom-center, where a desk/boom microphone
      * typically appears. Enabled by default so the mic is kept out of the box. */
     obs_data_set_default_bool(settings, "protect_enabled", true);
@@ -248,6 +306,13 @@ static void vision_update(void *filter_ptr, obs_data_t *settings)
 
     filter->threshold = obs_data_get_double(settings, "threshold");
     filter->qualityLevel = obs_data_get_int(settings, "quality");
+
+    float scale = (float) obs_data_get_double(settings, "proc_scale");
+    if (scale < 0.25f)
+        scale = 0.25f;
+    if (scale > 1.0f)
+        scale = 1.0f;
+    filter->proc_scale = scale;
 
     if (obs_data_get_bool(settings, "protect_enabled")) {
         /* Convert per-edge crops into a top-left origin + size rectangle. */
@@ -277,6 +342,7 @@ static void *vision_create(obs_data_t *settings, struct obs_source *source)
     filter->context = source;
     filter->request = [[VNGeneratePersonSegmentationRequest alloc] init];
     pthread_mutex_init(&filter->pixelBufferMutex, NULL);
+    atomic_init(&filter->request_in_flight, false);
 
     /* Performing the segmentation in realtime takes too long and will lag OBS, especially at higher
 	 * quality modes. As such, defer it to a different thread. This will make the mask lag behind a few
@@ -285,6 +351,7 @@ static void *vision_create(obs_data_t *settings, struct obs_source *source)
 
     obs_enter_graphics();
     filter->texrender = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
+    filter->seg_texrender = gs_texrender_create(GS_BGRA, GS_ZS_NONE);
     char *file = obs_module_file("alpha_mask.effect");
     filter->effect = gs_effect_create_from_file(file, NULL);
     bfree(file);
@@ -303,8 +370,15 @@ static void vision_destroy(void *filter_ptr)
 {
     struct vision_data *filter = filter_ptr;
 
+    /* Wait for any in-flight segmentation to finish before tearing down, so its
+     * block does not touch freed state. The queue is serial, so an empty sync
+     * block runs only after the pending one completes. */
+    dispatch_sync(filter->mask_queue, ^ {
+                  });
+
     obs_enter_graphics();
     gs_texrender_destroy(filter->texrender);
+    gs_texrender_destroy(filter->seg_texrender);
     if (filter->stagesurf) {
         gs_stagesurface_destroy(filter->stagesurf);
     }

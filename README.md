@@ -80,6 +80,7 @@ Quit OBS, then delete `~/Library/Application Support/obs-studio/plugins/obs-mac-
 | --- | --- |
 | **Threshold** | How confident Vision must be that a pixel is "person" before keeping it. Higher = tighter cutout, lower = softer/looser edge. Default `0.9`. |
 | **Quality** | `Fast` / `Balanced` / `Accurate`. Higher quality is cleaner but uses more CPU/GPU. `Accurate` is recommended on Apple Silicon. |
+| **Processing scale (motion tracking)** | Runs the segmentation on a downscaled copy of the frame. **Lower = faster inference, so the cutout keeps up better when you move quickly**; higher = more edge detail. Output stays full resolution. Default `0.5`. If the mask trails you on fast movement, lower this. |
 | **Keep a protected region (e.g. microphone)** | Master on/off for the protected box. **On by default.** |
 | **Crop left / right / top / bottom edge in** | Each slider pulls that edge of the box inward from the frame border. `0` = the edge sits at the frame border; higher = pulled further in. Drag all four to box in your mic. |
 | **Protected region: edge feather** | Softens the box edge so it blends into the cutout instead of showing a hard rectangle. |
@@ -146,7 +147,8 @@ git push origin 0.3.1
 ## Troubleshooting
 
 - **"The filter isn't in the list."** Make sure you're on OBS 31.1+ and that you quit and reopened OBS after installing. Look under **Effect Filters**, not Audio filters.
-- **"Edges flicker or lag a little."** Segmentation runs on a background thread to keep OBS smooth, so the mask trails the video by a frame or two. Raise **Quality** for a cleaner edge.
+- **"The cutout trails me / doesn't stick when I move quickly."** That's latency, not accuracy. Lower **Processing scale** (e.g. `0.4`) so inference runs faster and the mask catches up, and/or set **Quality** to `Fast`. Segmentation runs on a background thread to keep OBS smooth, so there is always a small amount of lag; these two settings minimize it.
+- **"Edges flicker or lag a little."** Raise **Quality** for a cleaner edge, or nudge **Processing scale** up for more edge detail (at some cost to motion tracking).
 - **"My mic is still cut off."** Turn on **Keep a protected region** and drag the box over the mic. If the mic moves around, make the box a little larger or reposition it.
 - **"Something else inside the box shows the background."** That's expected - the box always shows the real image. Make the box smaller so it covers only the static object.
 
