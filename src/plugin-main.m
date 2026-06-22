@@ -19,8 +19,12 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <obs-module.h>
 #include <plugin-support.h>
 #include <util/threading.h>
+#include <util/platform.h>
 #include <stdatomic.h>
 #include <Vision/Vision.h>
+
+/* How long the crop outline stays visible after the last edit, in nanoseconds. */
+#define OUTLINE_VISIBLE_NS 5000000000ULL
 
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
@@ -45,6 +49,9 @@ struct vision_data {
     struct vec4 protect_region;
     float protect_feather;
     float protect_show_outline;
+    bool always_outline;       /* manual override: keep the guide on at all times */
+    uint64_t outline_until_ns; /* auto-show the guide until this time (set while editing) */
+    bool created;              /* false during the first update() (scene load), true after */
 
     VNGeneratePersonSegmentationRequestQualityLevel qualityLevel;
     gs_texture_t *mask_texture;
@@ -230,6 +237,9 @@ static void vision_render(void *filter_ptr, gs_effect_t *)
         gs_effect_set_float(filter->threshold_param, filter->threshold);
         gs_effect_set_vec4(filter->protect_region_param, &filter->protect_region);
         gs_effect_set_float(filter->protect_feather_param, filter->protect_feather);
+        /* Show the crop outline while editing (auto, time-boxed) or if forced on. */
+        bool show_outline = filter->always_outline || (os_gettime_ns() < filter->outline_until_ns);
+        filter->protect_show_outline = show_outline ? 1.0f : 0.0f;
         gs_effect_set_float(filter->protect_show_outline_param, filter->protect_show_outline);
 
         gs_blend_state_push();
@@ -250,8 +260,14 @@ static bool protect_enabled_changed(obs_properties_t *props, obs_property_t *, o
     return true;
 }
 
-static obs_properties_t *vision_properties(void *)
+static obs_properties_t *vision_properties(void *data)
 {
+    /* Opening the Filters dialog calls this. Arm the outline so it appears while
+     * the user is set up, then auto-hides shortly after they stop adjusting. */
+    if (data) {
+        ((struct vision_data *) data)->outline_until_ns = os_gettime_ns() + OUTLINE_VISIBLE_NS;
+    }
+
     obs_properties_t *props = obs_properties_create();
     obs_properties_add_float_slider(props, "threshold", obs_module_text("Threshold"), 0, 1, 0.05);
     obs_property_t *scale =
@@ -276,7 +292,10 @@ static obs_properties_t *vision_properties(void *)
     obs_properties_add_float_slider(props, "protect_crop_top", obs_module_text("Protect.CropTop"), 0, 1, 0.01);
     obs_properties_add_float_slider(props, "protect_crop_bottom", obs_module_text("Protect.CropBottom"), 0, 1, 0.01);
     obs_properties_add_float_slider(props, "protect_feather", obs_module_text("Protect.Feather"), 0, 0.25, 0.005);
-    obs_properties_add_bool(props, "protect_show_outline", obs_module_text("Protect.ShowOutline"));
+    /* The outline normally shows automatically while editing; this forces it always on. */
+    obs_property_t *always =
+        obs_properties_add_bool(props, "protect_show_outline", obs_module_text("Protect.AlwaysOutline"));
+    obs_property_set_long_description(always, obs_module_text("Protect.AlwaysOutline.Description"));
     return props;
 }
 
@@ -333,7 +352,15 @@ static void vision_update(void *filter_ptr, obs_data_t *settings)
         vec4_zero(&filter->protect_region);
     }
     filter->protect_feather = (float) obs_data_get_double(settings, "protect_feather");
-    filter->protect_show_outline = obs_data_get_bool(settings, "protect_show_outline") ? 1.0f : 0.0f;
+    filter->always_outline = obs_data_get_bool(settings, "protect_show_outline");
+
+    /* Auto-show the crop outline while editing: arm a short visibility window on
+     * every settings change. The first update() is the scene load, not an edit,
+     * so skip it (otherwise the outline would flash on the output at startup). */
+    if (filter->created) {
+        filter->outline_until_ns = os_gettime_ns() + OUTLINE_VISIBLE_NS;
+    }
+    filter->created = true;
 }
 
 static void *vision_create(obs_data_t *settings, struct obs_source *source)

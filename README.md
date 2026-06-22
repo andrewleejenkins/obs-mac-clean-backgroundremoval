@@ -84,16 +84,16 @@ Quit OBS, then delete `~/Library/Application Support/obs-studio/plugins/obs-mac-
 | **Keep a protected region (e.g. microphone)** | Master on/off for the protected box. **On by default.** |
 | **Crop left / right / top / bottom edge in** | Each slider pulls that edge of the box inward from the frame border. `0` = the edge sits at the frame border; higher = pulled further in. Drag all four to box in your mic. |
 | **Protected region: edge feather** | Softens the box edge so it blends into the cutout instead of showing a hard rectangle. |
-| **Show region outline** | Draws a bright magenta outline around the box in the preview so you can position it. **Turn this off before going live** - the outline renders on your output too. |
+| **Always show region outline** | A bright magenta outline marks the box so you can position it. It appears **automatically** when you open the Filters dialog and while you drag the crop sliders, then hides a few seconds after you stop - so you never have to toggle it before going live. Tick this only if you want it pinned on at all times. |
 
 ### Dialing in the mic
 
 The defaults box in the **bottom-center**, where a desk or boom mic usually sits. To fit it to your setup:
 
-1. Turn on **Show region outline** so you can see the box.
-2. Drag **Crop left / right / top / bottom** until the magenta box **just** covers your mic and nothing more. (Bottom defaults to `0` so the box reaches the bottom of the frame, where mics come up from.)
+1. Open the filter's **Filters** dialog - the magenta outline appears on its own.
+2. Drag **Crop left / right / top / bottom** until the box **just** covers your mic and nothing more. (Bottom defaults to `0` so the box reaches the bottom of the frame, where mics come up from.)
 3. Add a small amount of **feather** (try `0.02` to `0.05`) to soften the seam.
-4. **Turn Show region outline back off** before you stream or record.
+4. Stop adjusting - the outline auto-hides a few seconds later. Nothing to turn off.
 
 > **Keep the box as small as possible.** Anything that enters it - including your hand if it drops low - will also show the real background inside the box. A snug box around just the mic is invisible in practice.
 

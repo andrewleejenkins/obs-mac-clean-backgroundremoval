@@ -38,7 +38,7 @@
     },
     "name": "obs-mac-backgroundremoval",
     "displayName": "macOS Background Removal (Clean / Protected Region)",
-    "version": "0.3.4",
+    "version": "0.3.5",
     "author": "Andrew Lee Jenkins (fork of Sebastian Beckmann's obs-mac-backgroundremoval)",
     "website": "https://github.com/andrewleejenkins/obs-mac-clean-backgroundremoval",
     "email": "me@andrewleejenkins.com",
