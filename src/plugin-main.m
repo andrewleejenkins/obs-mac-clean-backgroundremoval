@@ -208,8 +208,7 @@ static obs_properties_t *vision_properties(void *)
                               VNGeneratePersonSegmentationRequestQualityLevelFast);
 
     /* Protected region: always keep a user-defined box in the foreground. */
-    obs_property_t *enable =
-        obs_properties_add_bool(props, "protect_enabled", obs_module_text("Protect.Enabled"));
+    obs_property_t *enable = obs_properties_add_bool(props, "protect_enabled", obs_module_text("Protect.Enabled"));
     obs_property_set_long_description(enable, obs_module_text("Protect.Description"));
     obs_property_set_modified_callback(enable, protect_enabled_changed);
     obs_properties_add_float_slider(props, "protect_x", obs_module_text("Protect.X"), 0, 1, 0.01);
