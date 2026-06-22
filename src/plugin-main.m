@@ -37,8 +37,10 @@ struct vision_data {
 
     gs_eparam_t *protect_region_param;
     gs_eparam_t *protect_feather_param;
+    gs_eparam_t *protect_show_outline_param;
     struct vec4 protect_region;
     float protect_feather;
+    float protect_show_outline;
 
     VNGeneratePersonSegmentationRequestQualityLevel qualityLevel;
     gs_texture_t *mask_texture;
@@ -176,6 +178,7 @@ static void vision_render(void *filter_ptr, gs_effect_t *)
         gs_effect_set_float(filter->threshold_param, filter->threshold);
         gs_effect_set_vec4(filter->protect_region_param, &filter->protect_region);
         gs_effect_set_float(filter->protect_feather_param, filter->protect_feather);
+        gs_effect_set_float(filter->protect_show_outline_param, filter->protect_show_outline);
 
         gs_blend_state_push();
         obs_source_process_filter_tech_end(filter->context, filter->effect, 0, 0, "Draw");
@@ -187,7 +190,8 @@ static void vision_render(void *filter_ptr, gs_effect_t *)
 static bool protect_enabled_changed(obs_properties_t *props, obs_property_t *, obs_data_t *settings)
 {
     const bool enabled = obs_data_get_bool(settings, "protect_enabled");
-    const char *const fields[] = {"protect_x", "protect_y", "protect_width", "protect_height", "protect_feather"};
+    const char *const fields[] = {"protect_crop_left",   "protect_crop_right", "protect_crop_top",
+                                  "protect_crop_bottom", "protect_feather",    "protect_show_outline"};
     for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
         obs_property_set_visible(obs_properties_get(props, fields[i]), enabled);
     }
@@ -211,11 +215,13 @@ static obs_properties_t *vision_properties(void *)
     obs_property_t *enable = obs_properties_add_bool(props, "protect_enabled", obs_module_text("Protect.Enabled"));
     obs_property_set_long_description(enable, obs_module_text("Protect.Description"));
     obs_property_set_modified_callback(enable, protect_enabled_changed);
-    obs_properties_add_float_slider(props, "protect_x", obs_module_text("Protect.X"), 0, 1, 0.01);
-    obs_properties_add_float_slider(props, "protect_y", obs_module_text("Protect.Y"), 0, 1, 0.01);
-    obs_properties_add_float_slider(props, "protect_width", obs_module_text("Protect.Width"), 0, 1, 0.01);
-    obs_properties_add_float_slider(props, "protect_height", obs_module_text("Protect.Height"), 0, 1, 0.01);
+    /* Crop each edge inward from the frame border (0 = at the edge, higher = pulled in). */
+    obs_properties_add_float_slider(props, "protect_crop_left", obs_module_text("Protect.CropLeft"), 0, 1, 0.01);
+    obs_properties_add_float_slider(props, "protect_crop_right", obs_module_text("Protect.CropRight"), 0, 1, 0.01);
+    obs_properties_add_float_slider(props, "protect_crop_top", obs_module_text("Protect.CropTop"), 0, 1, 0.01);
+    obs_properties_add_float_slider(props, "protect_crop_bottom", obs_module_text("Protect.CropBottom"), 0, 1, 0.01);
     obs_properties_add_float_slider(props, "protect_feather", obs_module_text("Protect.Feather"), 0, 0.25, 0.005);
+    obs_properties_add_bool(props, "protect_show_outline", obs_module_text("Protect.ShowOutline"));
     return props;
 }
 
@@ -226,11 +232,14 @@ static void vision_defaults(obs_data_t *settings)
     /* Default protected box sits bottom-center, where a desk/boom microphone
      * typically appears. Enabled by default so the mic is kept out of the box. */
     obs_data_set_default_bool(settings, "protect_enabled", true);
-    obs_data_set_default_double(settings, "protect_x", 0.37);
-    obs_data_set_default_double(settings, "protect_y", 0.60);
-    obs_data_set_default_double(settings, "protect_width", 0.26);
-    obs_data_set_default_double(settings, "protect_height", 0.40);
+    /* Crops from each frame edge: box spans the bottom-center by default. Bottom
+     * stays at the frame edge (mics come up from below), so crop_bottom = 0. */
+    obs_data_set_default_double(settings, "protect_crop_left", 0.37);
+    obs_data_set_default_double(settings, "protect_crop_right", 0.37);
+    obs_data_set_default_double(settings, "protect_crop_top", 0.60);
+    obs_data_set_default_double(settings, "protect_crop_bottom", 0.0);
     obs_data_set_default_double(settings, "protect_feather", 0.02);
+    obs_data_set_default_bool(settings, "protect_show_outline", false);
 }
 
 static void vision_update(void *filter_ptr, obs_data_t *settings)
@@ -241,15 +250,25 @@ static void vision_update(void *filter_ptr, obs_data_t *settings)
     filter->qualityLevel = obs_data_get_int(settings, "quality");
 
     if (obs_data_get_bool(settings, "protect_enabled")) {
-        vec4_set(&filter->protect_region, (float) obs_data_get_double(settings, "protect_x"),
-                 (float) obs_data_get_double(settings, "protect_y"),
-                 (float) obs_data_get_double(settings, "protect_width"),
-                 (float) obs_data_get_double(settings, "protect_height"));
+        /* Convert per-edge crops into a top-left origin + size rectangle. */
+        const float left = (float) obs_data_get_double(settings, "protect_crop_left");
+        const float top = (float) obs_data_get_double(settings, "protect_crop_top");
+        const float right = 1.0f - (float) obs_data_get_double(settings, "protect_crop_right");
+        const float bottom = 1.0f - (float) obs_data_get_double(settings, "protect_crop_bottom");
+        const float width = right - left;
+        const float height = bottom - top;
+        if (width > 0.0f && height > 0.0f) {
+            vec4_set(&filter->protect_region, left, top, width, height);
+        } else {
+            /* Crops overlap: nothing left to protect. */
+            vec4_zero(&filter->protect_region);
+        }
     } else {
         /* Zero size disables the protected region in the shader. */
         vec4_zero(&filter->protect_region);
     }
     filter->protect_feather = (float) obs_data_get_double(settings, "protect_feather");
+    filter->protect_show_outline = obs_data_get_bool(settings, "protect_show_outline") ? 1.0f : 0.0f;
 }
 
 static void *vision_create(obs_data_t *settings, struct obs_source *source)
@@ -274,6 +293,7 @@ static void *vision_create(obs_data_t *settings, struct obs_source *source)
     filter->threshold_param = gs_effect_get_param_by_name(filter->effect, "threshold");
     filter->protect_region_param = gs_effect_get_param_by_name(filter->effect, "protect_region");
     filter->protect_feather_param = gs_effect_get_param_by_name(filter->effect, "protect_feather");
+    filter->protect_show_outline_param = gs_effect_get_param_by_name(filter->effect, "protect_show_outline");
     obs_leave_graphics();
     vision_update(filter, settings);
     return filter;

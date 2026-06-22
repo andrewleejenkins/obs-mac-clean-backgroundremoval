@@ -81,17 +81,18 @@ Quit OBS, then delete `~/Library/Application Support/obs-studio/plugins/obs-mac-
 | **Threshold** | How confident Vision must be that a pixel is "person" before keeping it. Higher = tighter cutout, lower = softer/looser edge. Default `0.9`. |
 | **Quality** | `Fast` / `Balanced` / `Accurate`. Higher quality is cleaner but uses more CPU/GPU. `Accurate` is recommended on Apple Silicon. |
 | **Keep a protected region (e.g. microphone)** | Master on/off for the protected box. **On by default.** |
-| **Protected region: left / top** | Position of the box's top-left corner, as a fraction of the frame (`0` = left/top edge, `1` = right/bottom edge). |
-| **Protected region: width / height** | Size of the box, as a fraction of the frame. |
+| **Crop left / right / top / bottom edge in** | Each slider pulls that edge of the box inward from the frame border. `0` = the edge sits at the frame border; higher = pulled further in. Drag all four to box in your mic. |
 | **Protected region: edge feather** | Softens the box edge so it blends into the cutout instead of showing a hard rectangle. |
+| **Show region outline** | Draws a bright magenta outline around the box in the preview so you can position it. **Turn this off before going live** - the outline renders on your output too. |
 
 ### Dialing in the mic
 
-The defaults drop the protected box at the **bottom-center**, where a desk or boom mic usually sits. To fit it to your setup:
+The defaults box in the **bottom-center**, where a desk or boom mic usually sits. To fit it to your setup:
 
-1. Watch the OBS preview while you drag **left / top / width / height**.
-2. Shrink the box until it **just** covers your mic and nothing more.
+1. Turn on **Show region outline** so you can see the box.
+2. Drag **Crop left / right / top / bottom** until the magenta box **just** covers your mic and nothing more. (Bottom defaults to `0` so the box reaches the bottom of the frame, where mics come up from.)
 3. Add a small amount of **feather** (try `0.02` to `0.05`) to soften the seam.
+4. **Turn Show region outline back off** before you stream or record.
 
 > **Keep the box as small as possible.** Anything that enters it - including your hand if it drops low - will also show the real background inside the box. A snug box around just the mic is invisible in practice.
 

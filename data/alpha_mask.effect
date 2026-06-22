@@ -8,8 +8,9 @@ uniform float threshold;
  * forced to foreground regardless of the person-segmentation mask. This keeps
  * static objects in front of the subject (e.g. a microphone) from being cut.
  * When the box has zero size the feature is disabled. */
-uniform float4 protect_region; /* xy = top-left corner, zw = width/height */
-uniform float protect_feather; /* soft edge half-width in UV units */
+uniform float4 protect_region;     /* xy = top-left corner, zw = width/height */
+uniform float protect_feather;     /* soft edge half-width in UV units */
+uniform float protect_show_outline; /* >0.5 draws a setup guide outline */
 
 sampler_state texSampler {
 	Filter    = Linear;
@@ -53,6 +54,19 @@ float4 PSMask(FragData f_in) : TARGET
 		keep = max(keep, protect_box_factor(f_in.uv));
 	}
 	rgba *= keep;
+
+	/* Setup guide: outline the protected region so it can be positioned without
+	 * leaving the frame. Turn this off before going live. */
+	if (protect_show_outline > 0.5 && protect_region.z > 0.0 && protect_region.w > 0.0) {
+		float2 lo = protect_region.xy;
+		float2 hi = protect_region.xy + protect_region.zw;
+		float t = 0.005;
+		float on_box = step(lo.x, f_in.uv.x) * step(f_in.uv.x, hi.x) * step(lo.y, f_in.uv.y) *
+			       step(f_in.uv.y, hi.y);
+		float on_inner = step(lo.x + t, f_in.uv.x) * step(f_in.uv.x, hi.x - t) *
+				 step(lo.y + t, f_in.uv.y) * step(f_in.uv.y, hi.y - t);
+		rgba = lerp(rgba, float4(1.0, 0.0, 1.0, 1.0), on_box * (1.0 - on_inner));
+	}
 	return rgba;
 }
 
