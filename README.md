@@ -1,100 +1,166 @@
-# macOS Background Removal for OBS - Clean / Protected Region fork
+<div align="center">
 
-## Introduction
+# macOS Background Removal for OBS - Clean / Protected Region
 
-This is an OBS filter that removes a person's background on macOS using Apple's
-built-in [Vision](https://developer.apple.com/documentation/vision) person
-segmentation API. It is a fork of Sebastian Beckmann's excellent
-[obs-mac-backgroundremoval](https://github.com/gxalpha/obs-mac-backgroundremoval).
+**AI background removal for OBS on macOS that doesn't eat your microphone.**
 
-**What this fork adds: a "Protected Region".**
+A fork of [gxalpha/obs-mac-backgroundremoval](https://github.com/gxalpha/obs-mac-backgroundremoval) that adds a **Protected Region** so static objects in front of you (like a desk or boom mic) stop getting cut out along with the background.
 
-Apple's Vision API segments *people only*. Anything in front of you that is not
-recognized as part of a person, such as a desk or boom microphone, falls below
-the segmentation threshold and gets cut out along with the background. No
-threshold or quality setting can bring it back, because the model simply does
-not consider the object to be a person.
+[Download](https://github.com/andrewleejenkins/obs-mac-clean-backgroundremoval/releases/latest) ·
+[Installation](#installation) ·
+[How to use](#how-to-use) ·
+[Why this exists](#why-this-fork-exists) ·
+[Build from source](#building-from-source)
 
-This fork adds a user-defined rectangle that is always forced to stay in the
-foreground, regardless of what the segmentation model decides. Park it over your
-microphone (or any other static object in front of you) and it stops
-disappearing. The box has feathered edges so it blends cleanly, and it is
-composited at the same alpha stage as the mask so the result stays smooth.
+</div>
 
-This plugin requires OBS 31.1 or later.
+---
 
-## The new controls
+## Overview
 
-Open the filter's properties and you'll find, below the existing Threshold and
-Quality controls:
+This plugin adds an OBS **effect filter** that removes a person's background on macOS using Apple's built-in [Vision](https://developer.apple.com/documentation/vision) person-segmentation API. No green screen, no cloud service, no NVIDIA GPU - it runs entirely on-device using the same engine macOS uses for Portrait mode.
+
+It works on Apple Silicon and Intel Macs, on any OBS source (not just webcams), and requires **OBS 31.1 or later** on **macOS 12 (Monterey) or later**.
+
+### What this fork adds
+
+Apple's Vision API segments **people only**. Anything in front of you that it doesn't recognize as part of a person - most commonly a microphone - drops below the segmentation threshold and gets erased right along with your background. No amount of tweaking the Threshold or Quality settings brings it back, because the model fundamentally does not consider the object to be a person.
+
+This fork fixes that with a **Protected Region**: a user-positioned rectangle that is always forced to stay in the foreground, no matter what the segmentation model decides. Park it over your mic and the mic stays put. The box has feathered edges and is composited at the same alpha stage as the segmentation mask, so the result still looks clean instead of like a hard pasted rectangle.
+
+---
+
+## Installation
+
+> The plugin is not code-signed or notarized (it is free and open source), so macOS Gatekeeper will block it on first run. The steps below get you past that safely - you only do this once.
+
+1. **Download** the latest `obs-mac-backgroundremoval-x.y.z-macos-universal.pkg` from the [Releases page](https://github.com/andrewleejenkins/obs-mac-clean-backgroundremoval/releases/latest).
+2. **Open the `.pkg`.** macOS will show a warning that it cannot verify the developer. Click **Done** (do **not** click "Move to Trash").
+3. Open **System Settings → Privacy & Security**. Scroll down to the **Security** section. You will see a message that `obs-mac-backgroundremoval-[...].pkg` was blocked.
+4. Click **Open Anyway** and confirm with your administrator login (Touch ID or password).
+5. The installer reopens - run through it to finish.
+6. **Quit and reopen OBS** if it was already running.
+
+The plugin installs to `~/Library/Application Support/obs-studio/plugins/`.
+
+### Drop-in replacement note
+
+This fork keeps the **same plugin name and identifier** as the original, so it installs as a drop-in replacement. If you already have the original `obs-mac-backgroundremoval` installed, this overwrites it and your existing scene filters keep working - they simply gain the new Protected Region option. If you would rather start clean, delete the old `obs-mac-backgroundremoval.plugin` from the plugins folder above before installing.
+
+### Uninstalling
+
+Delete `~/Library/Application Support/obs-studio/plugins/obs-mac-backgroundremoval.plugin` and restart OBS.
+
+---
+
+## How to use
+
+1. In OBS, right-click your camera (or any) source → **Filters**.
+2. Under **Effect Filters**, click **+** and add **macOS Background Removal**.
+3. Your background disappears immediately. Now tune it:
+
+### The controls
 
 | Control | What it does |
 | --- | --- |
-| **Keep a protected region (e.g. microphone)** | Master on/off for the feature. On by default. |
-| **Protected region: left / top** | Top-left corner of the box, as a fraction of the frame (0 = left/top edge, 1 = right/bottom edge). |
-| **Protected region: width / height** | Size of the box as a fraction of the frame. |
+| **Threshold** | How confident Vision must be that a pixel is "person" before keeping it. Higher = tighter cutout, lower = softer/looser edge. Default `0.9`. |
+| **Quality** | `Fast` / `Balanced` / `Accurate`. Higher quality is cleaner but uses more CPU/GPU. `Accurate` is recommended on Apple Silicon. |
+| **Keep a protected region (e.g. microphone)** | Master on/off for the protected box. **On by default.** |
+| **Protected region: left / top** | Position of the box's top-left corner, as a fraction of the frame (`0` = left/top edge, `1` = right/bottom edge). |
+| **Protected region: width / height** | Size of the box, as a fraction of the frame. |
 | **Protected region: edge feather** | Softens the box edge so it blends into the cutout instead of showing a hard rectangle. |
 
-The defaults place the box bottom-center, where a desk or boom mic usually sits.
-Watch the OBS preview and nudge **left/top/width/height** until the box just
-covers your mic, then add a touch of **feather** to soften the seam. Keep the box
-as small as possible: anything else that enters it (for example your hand) will
-also show the real background, so you want it covering only the mic.
+### Dialing in the mic
 
-> Tip: if you want zero protected region (vanilla behaviour), just turn the
-> toggle off.
+The defaults drop the protected box at the **bottom-center**, where a desk or boom mic usually sits. To fit it to your setup:
 
-## Getting started (install)
+1. Watch the OBS preview while you drag **left / top / width / height**.
+2. Shrink the box until it **just** covers your mic and nothing more.
+3. Add a small amount of **feather** (try `0.02` to `0.05`) to soften the seam.
 
-Download and run the installer from the
-[releases](https://github.com/andrewleejenkins/obs-mac-clean-backgroundremoval/releases)
-page. It is not signed or notarized, so follow these steps:
+> **Keep the box as small as possible.** Anything that enters it - including your hand if it drops low - will also show the real background inside the box. A snug box around just the mic is invisible in practice.
 
-- Open the `.pkg` file you downloaded. You'll get a warning; select "Done" (do
-  **not** move it to trash).
-- Open System Settings → "Privacy & Security" → "Security". Near the bottom
-  you'll see that the `.pkg` was blocked.
-- Click "Open Anyway" and confirm with your administrator login, then run the
-  installer again.
+If you ever want the original, vanilla behavior with no protected region, just toggle **Keep a protected region** off.
 
-This fork keeps the same plugin name and identifier as the original, so it
-installs as a **drop-in replacement**. If you already have the original
-`obs-mac-backgroundremoval` installed, this will overwrite it and your existing
-scene filters will keep working (and gain the protected-region option). If you
-prefer, remove the old plugin first from
-`~/Library/Application Support/obs-studio/plugins/`.
+---
 
-The filter is found in the filters window under "Effect Filters". It can be used
-on any type of source, not just Video Capture Devices.
+## Why this fork exists
+
+I use this plugin for streaming and recording, and it is genuinely excellent - except my black microphone kept getting deleted because Apple's segmentation model only knows how to find people. Rather than switch to a heavier ONNX-based matting plugin, I added a tiny, surgical fix: force one fixed rectangle to always stay visible. It is the right tool for a static object in a fixed position, and it keeps the plugin fast and native.
+
+Full credit for the original plugin goes to **Sebastian Beckmann** ([gxalpha](https://github.com/gxalpha/obs-mac-backgroundremoval)). This fork only adds the Protected Region on top of his work.
+
+---
 
 ## Building from source
 
-The build system is the standard
-[OBS Plugin Template](https://github.com/obsproject/obs-plugintemplate); its
-build instructions apply here. In short, on macOS:
+The build system is the standard [OBS Plugin Template](https://github.com/obsproject/obs-plugintemplate); its instructions apply here.
+
+**Requirements:** macOS with Xcode (full install, not just Command Line Tools) and CMake 3.28+.
 
 ```sh
-# Requires Xcode + CMake
+git clone https://github.com/andrewleejenkins/obs-mac-clean-backgroundremoval.git
+cd obs-mac-clean-backgroundremoval
+
+# Build a universal (arm64 + x86_64) plugin
 .github/scripts/build-macos
+
+# Produce an installer .pkg
 .github/scripts/package-macos
 ```
 
-The GitHub Actions workflows in `.github/workflows/` also build and package the
-plugin for macOS, Windows, and Linux automatically on every push and tag. To cut
-a release, push a tag (the project follows the OBS template's release flow).
+The repository's **GitHub Actions** workflows also build and package the plugin for macOS, Windows, and Linux automatically on every push. **Pushing a version tag** like `0.3.1` builds the universal package and publishes a GitHub Release:
 
-## License and Thanks
+```sh
+git tag 0.3.1
+git push origin 0.3.1
+```
 
-This plugin is licensed under the terms of the GNU General Public License,
-Version 2. You can find the full text in the `LICENSE` file.
+### Project layout
 
-All credit for the original plugin goes to **Sebastian Beckmann**
-([gxalpha](https://github.com/gxalpha/obs-mac-backgroundremoval)). This fork only
-adds the protected-region feature on top of his work.
+| Path | Purpose |
+| --- | --- |
+| `src/plugin-main.m` | The filter: Vision request, mask handling, properties, and the Protected Region logic. |
+| `data/alpha_mask.effect` | The shader that composites the segmentation mask and the protected box. |
+| `data/locale/en-US.ini` | UI strings. |
+| `buildspec.json` | Plugin metadata and dependency pins. |
 
-Huge credits also go to pkv from OBS, who implemented a similar filter in OBS for
-NVIDIA GPUs; his code was referenced heavily in the original plugin's early
-stages.
+---
 
-The build system is based on the
-[OBS Plugin Template](https://github.com/obsproject/obs-plugintemplate).
+## Troubleshooting
+
+- **"The filter isn't in the list."** Make sure you're on OBS 31.1+ and that you quit and reopened OBS after installing. Look under **Effect Filters**, not Audio filters.
+- **"Edges flicker or lag a little."** Segmentation runs on a background thread to keep OBS smooth, so the mask trails the video by a frame or two. Raise **Quality** for a cleaner edge.
+- **"My mic is still cut off."** Turn on **Keep a protected region** and drag the box over the mic. If the mic moves around, make the box a little larger or reposition it.
+- **"Something else inside the box shows the background."** That's expected - the box always shows the real image. Make the box smaller so it covers only the static object.
+
+---
+
+## Credits and License
+
+This plugin is licensed under the **GNU General Public License, Version 2**. See the [`LICENSE`](LICENSE) file for the full text.
+
+- Original plugin by **Sebastian Beckmann** - <https://github.com/gxalpha/obs-mac-backgroundremoval>
+- Early implementation referenced **pkv** from OBS, who built a similar NVIDIA-GPU filter.
+- Build system based on the [OBS Plugin Template](https://github.com/obsproject/obs-plugintemplate).
+- Protected Region fork by **Andrew Lee Jenkins**.
+
+---
+
+## About the author
+
+Built and maintained by **Andrew Lee Jenkins**.
+
+### Projects
+
+- **Warpsite** - fast, modern websites for service businesses · <https://warpsite.dev>
+- **Seedly CRM** - the CRM built for growing local businesses · <https://seedlycrm.com>
+- **Personal site** - <https://andrewleejenkins.com>
+
+### Connect
+
+<!-- SOCIALS:START -->
+_Social links coming soon._
+<!-- SOCIALS:END -->
+
+If this plugin saved your microphone, a ⭐ on the repo is appreciated.
