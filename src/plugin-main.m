@@ -43,6 +43,21 @@ struct vision_data {
     gs_eparam_t *threshold_param;
     float threshold;
 
+    gs_eparam_t *edge_softness_param;
+    float edge_softness;
+
+    /* Temporal smoothing of the mask. Vision's alpha boils frame-to-frame at
+     * uncertain boundaries (hair against a plain background), which reads as
+     * jittery edges. An exponential moving average over display frames damps
+     * it. 0 = off (snap to newest mask), higher = steadier but slightly laggier
+     * on motion. mask_accum holds the running average; mask_blend is the uint8
+     * upload buffer. Both are touched only on the graphics thread. */
+    float edge_smoothing;
+    float *mask_accum;
+    uint8_t *mask_blend;
+    uint32_t accum_w;
+    uint32_t accum_h;
+
     gs_eparam_t *protect_region_param;
     gs_eparam_t *protect_feather_param;
     gs_eparam_t *protect_show_outline_param;
@@ -225,7 +240,41 @@ static void vision_render(void *filter_ptr, gs_effect_t *)
     /* STEP FOUR point two: Get mask texture from pixel buffer */
     const uint8_t *base_address = CVPixelBufferGetBaseAddress(filter->pixelBufferOut);
     const uint32_t bytes_per_row = (uint32_t) CVPixelBufferGetBytesPerRow(filter->pixelBufferOut);
-    gs_texture_set_image(filter->mask_texture, base_address, bytes_per_row, false);
+
+    if (filter->edge_smoothing > 0.001f) {
+        /* Temporal smoothing: ease each mask pixel toward the newest result
+         * instead of snapping to it. This damps the per-frame boil at uncertain
+         * edges. The average advances once per display frame, so when a steady
+         * mask repeats across frames it simply converges and holds. */
+        const size_t count = (size_t) out_width * (size_t) out_height;
+        if (!filter->mask_accum || filter->accum_w != out_width || filter->accum_h != out_height) {
+            filter->mask_accum = brealloc(filter->mask_accum, count * sizeof(float));
+            filter->mask_blend = brealloc(filter->mask_blend, count);
+            filter->accum_w = out_width;
+            filter->accum_h = out_height;
+            /* Seed from the current mask so the edge doesn't fade up from black. */
+            for (uint32_t y = 0; y < out_height; y++) {
+                const uint8_t *row = base_address + (size_t) y * bytes_per_row;
+                float *arow = filter->mask_accum + (size_t) y * out_width;
+                for (uint32_t x = 0; x < out_width; x++)
+                    arow[x] = (float) row[x];
+            }
+        }
+        const float a = 1.0f - filter->edge_smoothing; /* weight of the newest sample */
+        for (uint32_t y = 0; y < out_height; y++) {
+            const uint8_t *row = base_address + (size_t) y * bytes_per_row;
+            float *arow = filter->mask_accum + (size_t) y * out_width;
+            uint8_t *brow = filter->mask_blend + (size_t) y * out_width;
+            for (uint32_t x = 0; x < out_width; x++) {
+                float v = arow[x] + ((float) row[x] - arow[x]) * a;
+                arow[x] = v;
+                brow[x] = (uint8_t) (v + 0.5f);
+            }
+        }
+        gs_texture_set_image(filter->mask_texture, filter->mask_blend, out_width, false);
+    } else {
+        gs_texture_set_image(filter->mask_texture, base_address, bytes_per_row, false);
+    }
 
     CVPixelBufferUnlockBaseAddress(filter->pixelBufferOut, kCVPixelBufferLock_ReadOnly);
     pthread_mutex_unlock(&filter->pixelBufferMutex);
@@ -235,6 +284,7 @@ static void vision_render(void *filter_ptr, gs_effect_t *)
         gs_effect_set_texture_srgb(filter->src_param, source_texture);
         gs_effect_set_texture_srgb(filter->mask_param, filter->mask_texture);
         gs_effect_set_float(filter->threshold_param, filter->threshold);
+        gs_effect_set_float(filter->edge_softness_param, filter->edge_softness);
         gs_effect_set_vec4(filter->protect_region_param, &filter->protect_region);
         gs_effect_set_float(filter->protect_feather_param, filter->protect_feather);
         /* Show the crop outline while editing (auto, time-boxed) or if forced on. */
@@ -270,6 +320,12 @@ static obs_properties_t *vision_properties(void *data)
 
     obs_properties_t *props = obs_properties_create();
     obs_properties_add_float_slider(props, "threshold", obs_module_text("Threshold"), 0, 1, 0.05);
+    obs_property_t *softness =
+        obs_properties_add_float_slider(props, "edge_softness", obs_module_text("EdgeSoftness"), 0, 0.3, 0.01);
+    obs_property_set_long_description(softness, obs_module_text("EdgeSoftness.Description"));
+    obs_property_t *smoothing =
+        obs_properties_add_float_slider(props, "edge_smoothing", obs_module_text("EdgeSmoothing"), 0, 0.95, 0.05);
+    obs_property_set_long_description(smoothing, obs_module_text("EdgeSmoothing.Description"));
     obs_property_t *scale =
         obs_properties_add_float_slider(props, "proc_scale", obs_module_text("ProcScale"), 0.25, 1.0, 0.05);
     obs_property_set_long_description(scale, obs_module_text("ProcScale.Description"));
@@ -302,6 +358,10 @@ static obs_properties_t *vision_properties(void *data)
 static void vision_defaults(obs_data_t *settings)
 {
     obs_data_set_default_double(settings, "threshold", 0.9);
+    /* Soften the mask edge a touch and damp the per-frame boil by default, so
+     * hair against a plain background looks steady out of the box. */
+    obs_data_set_default_double(settings, "edge_softness", 0.1);
+    obs_data_set_default_double(settings, "edge_smoothing", 0.5);
     obs_data_set_default_int(settings, "quality", VNGeneratePersonSegmentationRequestQualityLevelBalanced);
     /* Segment at half resolution by default: much faster inference (mask keeps
      * up with motion) with negligible quality loss, since the mask is upscaled. */
@@ -324,6 +384,16 @@ static void vision_update(void *filter_ptr, obs_data_t *settings)
     struct vision_data *filter = filter_ptr;
 
     filter->threshold = obs_data_get_double(settings, "threshold");
+    filter->edge_softness = (float) obs_data_get_double(settings, "edge_softness");
+
+    float smoothing = (float) obs_data_get_double(settings, "edge_smoothing");
+    if (smoothing < 0.0f)
+        smoothing = 0.0f;
+    /* Cap below 1 so the moving average always converges (1.0 would freeze it). */
+    if (smoothing > 0.95f)
+        smoothing = 0.95f;
+    filter->edge_smoothing = smoothing;
+
     filter->qualityLevel = obs_data_get_int(settings, "quality");
 
     float scale = (float) obs_data_get_double(settings, "proc_scale");
@@ -385,6 +455,7 @@ static void *vision_create(obs_data_t *settings, struct obs_source *source)
     filter->src_param = gs_effect_get_param_by_name(filter->effect, "image");
     filter->mask_param = gs_effect_get_param_by_name(filter->effect, "mask");
     filter->threshold_param = gs_effect_get_param_by_name(filter->effect, "threshold");
+    filter->edge_softness_param = gs_effect_get_param_by_name(filter->effect, "edge_softness");
     filter->protect_region_param = gs_effect_get_param_by_name(filter->effect, "protect_region");
     filter->protect_feather_param = gs_effect_get_param_by_name(filter->effect, "protect_feather");
     filter->protect_show_outline_param = gs_effect_get_param_by_name(filter->effect, "protect_show_outline");
@@ -414,6 +485,10 @@ static void vision_destroy(void *filter_ptr)
     }
     gs_effect_destroy(filter->effect);
     obs_leave_graphics();
+    if (filter->mask_accum)
+        bfree(filter->mask_accum);
+    if (filter->mask_blend)
+        bfree(filter->mask_blend);
     bfree(filter);
 };
 
